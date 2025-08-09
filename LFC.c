@@ -1,65 +1,71 @@
-#define PWMA 3
-#define AIN1 4
-#define AIN2 5
-#define PWMB 6
-#define BIN1 7
-#define BIN2 8
-#define STBY 9
+#define enA 3//Enable1 L293 Pin enA 
+#define in1 4 //Motor1  L293 Pin in1 
+#define in2 5 //Motor1  L293 Pin in1 
+#define in3 7 //Motor2  L293 Pin in1 
+#define in4 8 //Motor2  L293 Pin in1 
+#define enB 6 //Enable2 L293 Pin enB 
+#define R_S 12//ir sensor Right
+#define L_S 7//ir sensor Left
 
-#define IR_LEFT A0
-#define IR_RIGHT A1
-
-void setup() {
-  Serial.begin(9600); // Start serial monitor
-
-  pinMode(PWMA, OUTPUT);
-  pinMode(AIN1, OUTPUT);
-  pinMode(AIN2, OUTPUT);
-  pinMode(PWMB, OUTPUT);
-  pinMode(BIN1, OUTPUT);
-  pinMode(BIN2, OUTPUT);
-  pinMode(STBY, OUTPUT);
-
-  pinMode(IR_LEFT, INPUT);
-  pinMode(IR_RIGHT, INPUT);
-
-  digitalWrite(STBY, HIGH); // Enable motor driver
+void setup(){ 
+Serial.begin(9600);
+pinMode(R_S, INPUT); 
+pinMode(L_S, INPUT); 
+pinMode(enA, OUTPUT); 
+pinMode(in1, OUTPUT); 
+pinMode(in2, OUTPUT); 
+pinMode(in3, OUTPUT);
+pinMode(in4, OUTPUT); 
+pinMode(enB, OUTPUT);
+digitalWrite(enA, HIGH); 
+digitalWrite(enB, HIGH); 
+delay(1000);
 }
 
-void loop() {
-  int left = digitalRead(IR_LEFT);
-  int right = digitalRead(IR_RIGHT);
+void loop(){  
+if((digitalRead(R_S) == 0)&&(digitalRead(L_S) == 0)){forward();}   //if Right Sensor and Left Sensor are at White color then it will call forword function
+if((digitalRead(R_S) == 1)&&(digitalRead(L_S) == 0)){turnRight();} //if Right Sensor is Black and Left Sensor is White then it will call turn Right function  
+if((digitalRead(R_S) == 0)&&(digitalRead(L_S) == 1)){turnLeft();}  //if Right Sensor is White and Left Sensor is Black then it will call turn Left function
+if((digitalRead(R_S) == 1)&&(digitalRead(L_S) == 1)){Stop();} //if Right Sensor and Left Sensor are at Black color then it will call Stop function
+}
 
-  // Print sensor values
-  Serial.print("Left Sensor: ");
-  Serial.print(left);
-  Serial.print(" | Right Sensor: ");
-  Serial.print(right);
-  Serial.print(" --> ");
+void forward(){  //forword
+	analogWrite(enA, 50);
+	analogWrite(enB, 50);
 
-  if (left == LOW && right == LOW) {          // Forward
-    Serial.println("Moving Forward");
-    digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
-    digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
-    analogWrite(PWMA, 150); analogWrite(PWMB, 150);
-  }
-  else if (left == LOW && right == HIGH) {    // Turn right
-    Serial.println("Turning Right");
-    digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
-    digitalWrite(BIN1, LOW);  digitalWrite(BIN2, HIGH);
-    analogWrite(PWMA, 150); analogWrite(PWMB, 150);
-  }
-  else if (left == HIGH && right == LOW) {    // Turn left
-    Serial.println("Turning Left");
-    digitalWrite(AIN1, LOW);  digitalWrite(AIN2, HIGH);
-    digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
-    analogWrite(PWMA, 150); analogWrite(PWMB, 150);
-  }
-  else {                                      // Stop
-    Serial.println("Stopping");
-    analogWrite(PWMA, 0);
-    analogWrite(PWMB, 0);
-  }
+digitalWrite(in1, LOW); //Right Motor forword Pin 
+digitalWrite(in2, HIGH);  //Right Motor backword Pin 
+digitalWrite(in3, HIGH);  //Left Motor backword Pin 
+digitalWrite(in4, LOW); //Left Motor forword Pin 
 
-  delay(200); // Small delay for readable output
+}
+
+void turnRight(){ //turnRight
+	analogWrite(enA, 50);
+	analogWrite(enB, 50);
+digitalWrite(in1, LOW); //Right Motor forword Pin 
+digitalWrite(in2, HIGH);  //Right Motor backword Pin 
+
+digitalWrite(in3, LOW); //Left Motor backword Pin 
+
+digitalWrite(in4, HIGH);  //Left Motor forword Pin 
+}
+
+void turnLeft(){ //turnLeft
+	analogWrite(enA, 50);
+	analogWrite(enB, 50);
+
+digitalWrite(in1, HIGH);  //Right Motor forword Pin 
+digitalWrite(in2, LOW); //Right Motor backword Pin  
+digitalWrite(in3, HIGH);  //Left Motor backword Pin 
+digitalWrite(in4, LOW); //Left Motor forword Pin 
+
+}
+
+void Stop(){ //stop
+
+digitalWrite(in1, LOW); //Right Motor forword Pin 
+digitalWrite(in2, LOW); //Right Motor backword Pin 
+digitalWrite(in3, LOW); //Left Motor backword Pin
+digitalWrite(in4, LOW); //Left Motor forword Pin 
 }
