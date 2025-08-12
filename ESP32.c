@@ -1,0 +1,256 @@
+#include <WiFi.h>
+#include <WebServer.h>
+
+// ===== WiFi Credentials =====
+const char* ssid = "Hehehe";       // Change this
+const char* password = "hehehehe"; // Change this
+
+// ===== PID Variables (tunable via Web UI) =====
+float kp = 0.08;
+float ki = 0.004;
+float kd = 0.0006;
+
+// ===== Web Server =====
+WebServer server(80);
+
+// ===== Debug Console Buffer =====
+#define LOG_BUFFER_SIZE 2048
+String debugLog = "";
+void addToLog(String msg) {
+  Serial.println(msg);
+  debugLog += msg + "\n";
+  if (debugLog.length() > LOG_BUFFER_SIZE)
+    debugLog = debugLog.substring(debugLog.length() - LOG_BUFFER_SIZE);
+}
+
+// ===== Motor & Control =====
+bool motorsEnabled = true; // Motor ON/OFF state
+const int PWMA = 19, AIN1 = 18, AIN2 = 5;
+const int PWMB = 21, BIN1 = 4, BIN2 = 15;
+const int STBY = 2;
+
+// ===== Sensors =====
+const int SENSOR_PINS[8] = {25, 32, 33, 34, 35, 36, 39, 26};
+const int NUM_SENSORS = 8;
+int sensorMin[NUM_SENSORS], sensorMax[NUM_SENSORS];
+
+// ===== PID Working =====
+int baseSpeed = 255;
+int lastError = 0;
+long integral = 0;
+const int INTEGRAL_MAX = 5000;
+const int LOST_LINE_SEARCH_MAGNITUDE = 5000;
+
+// ===== Robot State =====
+enum RobotState { FOLLOW_LINE, SEARCH_LEFT, SEARCH_RIGHT, AT_INTERSECTION, STOPPED_MANUAL };
+RobotState currentState = FOLLOW_LINE;
+
+// ===== HTML Webpage =====
+String htmlPage() {
+  String page = "<!DOCTYPE html><html><head><title>PID Tuning + Console</title></head><body>";
+  page += "<h2>TEAM MINIONS- GOLUUU</h2>";
+  page += "<form action='/set' method='GET'>";
+  page += "Kp: <input type='number' step='0.0001' name='kp' value='" + String(kp,4) + "'><br>";
+  page += "Ki: <input type='number' step='0.0001' name='ki' value='" + String(ki,4) + "'><br>";
+  page += "Kd: <input type='number' step='0.0001' name='kd' value='" + String(kd,4) + "'><br><br>";
+  page += "<input type='submit' value='Update PID'>";
+  page += "</form><hr>";
+
+  // Motor control button
+  page += String("<button onclick='toggleMotor()'>Motors ") + (motorsEnabled ? "OFF" : "ON") + "</button><span id='motorstate'></span><hr>";
+
+  // Calibration
+  page += "<button onclick='calibrate()'>Calibrate Sensors (5s)</button><span id='calresult'></span><hr>";
+
+  // Console
+  page += "<h3>Status Console</h3>";
+  page += "<pre id='console' style='background:#eee;height:200px;overflow:auto;'></pre>";
+
+  page += R"(
+    <script>
+      function fetchLog(){
+        fetch('/log').then(r=>r.text()).then(t=>{
+          let c=document.getElementById('console');
+          c.textContent=t;
+          c.scrollTop=c.scrollHeight;
+        });
+      }
+      setInterval(fetchLog,1000); fetchLog();
+
+      function calibrate(){
+        document.getElementById('calresult').innerText=" Calibrating...";
+        fetch('/calibrate').then(r=>r.text()).then(t=>{
+          document.getElementById('calresult').innerText=" Done!";
+        });
+      }
+
+      function toggleMotor(){
+        fetch('/motor').then(r=>r.text()).then(t=>{
+          document.getElementById('motorstate').innerText=" " + t;
+        });
+      }
+    </script>
+  )";
+  page += "</body></html>";
+  return page;
+}
+
+// ===== Web Handlers =====
+void handleRoot() { server.send(200, "text/html", htmlPage()); }
+void handleSet() {
+  if (server.hasArg("kp")) kp = server.arg("kp").toFloat();
+  if (server.hasArg("ki")) ki = server.arg("ki").toFloat();
+  if (server.hasArg("kd")) kd = server.arg("kd").toFloat();
+  addToLog("PID updated: Kp=" + String(kp) + ", Ki=" + String(ki) + ", Kd=" + String(kd));
+  server.send(200, "text/html", htmlPage());
+}
+void handleLog() { server.send(200, "text/plain", debugLog); }
+void handleCalibrate() {
+  addToLog("Web calibration triggered!");
+  calibrateSensorsWeb(5000);
+  server.send(200, "text/plain", "Calibration complete.");
+}
+void handleMotorToggle() {
+  motorsEnabled = !motorsEnabled;
+  addToLog(String("Motors ") + (motorsEnabled ? "ENABLED" : "DISABLED") + " via Web");
+  server.send(200, "text/plain", motorsEnabled ? "Motors ON" : "Motors OFF");
+}
+
+// ===== Motors =====
+void enableMotors() { digitalWrite(STBY, HIGH); }
+void stopMotors() {
+  analogWrite(PWMA, 0); digitalWrite(AIN1, LOW); digitalWrite(AIN2, LOW);
+  analogWrite(PWMB, 0); digitalWrite(BIN1, LOW); digitalWrite(BIN2, LOW);
+}
+void moveForward(int leftSpeed, int rightSpeed) {
+  analogWrite(PWMA, leftSpeed); digitalWrite(AIN1, HIGH); digitalWrite(AIN2, LOW);
+  analogWrite(PWMB, rightSpeed); digitalWrite(BIN1, HIGH); digitalWrite(BIN2, LOW);
+}
+
+// ===== Sensors =====
+int readSensors(int* sensorValues, int* numActiveSensorsOut) {
+  int weightedSum = 0; *numActiveSensorsOut = 0;
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    sensorValues[i] = analogRead(SENSOR_PINS[i]);
+    if (sensorMax[i] != sensorMin[i])
+      sensorValues[i] = constrain(map(sensorValues[i], sensorMin[i], sensorMax[i], 0, 1000), 0, 1000);
+    else
+      sensorValues[i] = constrain(map(sensorValues[i], 0, 4095, 0, 1000), 0, 1000);
+    weightedSum += sensorValues[i] * (i * 1000 - 3500);
+    if (sensorValues[i] > 200) (*numActiveSensorsOut)++;
+  }
+  if (*numActiveSensorsOut == 0) return 0;
+  return weightedSum / (*numActiveSensorsOut * 10);
+}
+bool areAllSensorsBlack(int* sensorValues) {
+  for (int i = 0; i < NUM_SENSORS; i++) if (sensorValues[i] < 800) return false;
+  return true;
+}
+
+// ===== Calibration =====
+void calibrateSensorsWeb(int duration_ms) {
+  for (int i=0; i<NUM_SENSORS; i++) { sensorMin[i]=4095; sensorMax[i]=0; }
+  unsigned long start = millis();
+  while (millis() - start < (unsigned long)duration_ms) {
+    for (int i=0; i<NUM_SENSORS; i++) {
+      int raw = analogRead(SENSOR_PINS[i]);
+      if (raw < sensorMin[i]) sensorMin[i] = raw;
+      if (raw > sensorMax[i]) sensorMax[i] = raw;
+    }
+    delay(10);
+  }
+  addToLog("Calibration complete. Min/Max recorded.");
+}
+
+// ===== Setup =====
+void setup() {
+  Serial.begin(115200);
+
+  // WiFi on boot
+  WiFi.begin(ssid, password);
+  addToLog("Connecting to WiFi...");
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  addToLog("WiFi Connected, IP: " + WiFi.localIP().toString());
+
+  // Web server
+  server.on("/", handleRoot);
+  server.on("/set", handleSet);
+  server.on("/log", handleLog);
+  server.on("/calibrate", handleCalibrate);
+  server.on("/motor", handleMotorToggle);
+  server.begin();
+  addToLog("Web server started");
+
+  // Motor & sensor setup
+  pinMode(AIN1, OUTPUT); pinMode(AIN2, OUTPUT);
+  pinMode(BIN1, OUTPUT); pinMode(BIN2, OUTPUT);
+  pinMode(STBY, OUTPUT);
+  pinMode(PWMA, OUTPUT); pinMode(PWMB, OUTPUT);
+  for (int i=0; i<NUM_SENSORS; i++) pinMode(SENSOR_PINS[i], INPUT);
+
+  enableMotors();
+  stopMotors();
+
+  // Auto-calibrate
+  calibrateSensorsWeb(5000);
+}
+
+// ===== Loop =====
+void loop() {
+  server.handleClient();
+
+  if (!motorsEnabled) { // If motors off, just stop
+    stopMotors();
+    return;
+  }
+
+  int sensorValues[NUM_SENSORS];
+  int numActiveSensors = 0;
+  int error = readSensors(sensorValues, &numActiveSensors);
+  float turnAdjust = 0;
+
+  switch (currentState) {
+    case FOLLOW_LINE:
+      if (numActiveSensors == 0) {
+        currentState = (lastError < 0) ? SEARCH_LEFT : SEARCH_RIGHT;
+        integral = 0;
+        addToLog("Line lost -> searching");
+      } else if (numActiveSensors == NUM_SENSORS && areAllSensorsBlack(sensorValues)) {
+        currentState = AT_INTERSECTION;
+        integral = 0;
+        addToLog("Intersection detected");
+      } else {
+        float proportional = kp * error;
+        integral += error;
+        integral = constrain(integral, -INTEGRAL_MAX, INTEGRAL_MAX);
+        float integralTerm = ki * integral;
+        float derivative = kd * (error - lastError);
+        lastError = error;
+        turnAdjust = proportional + integralTerm + derivative;
+      }
+      break;
+    case SEARCH_LEFT:
+      turnAdjust = LOST_LINE_SEARCH_MAGNITUDE;
+      if (numActiveSensors > 0) { currentState = FOLLOW_LINE; integral = 0; addToLog("Line found (left search)"); }
+      break;
+    case SEARCH_RIGHT:
+      turnAdjust = -LOST_LINE_SEARCH_MAGNITUDE;
+      if (numActiveSensors > 0) { currentState = FOLLOW_LINE; integral = 0; addToLog("Line found (right search)"); }
+      break;
+    case AT_INTERSECTION:
+      stopMotors();
+      delay(1000);
+      currentState = FOLLOW_LINE;
+      break;
+    case STOPPED_MANUAL:
+      stopMotors();
+      break;
+  }
+
+  int leftMotorSpeed = constrain(baseSpeed + turnAdjust, 0, 200);
+  int rightMotorSpeed = constrain(baseSpeed - turnAdjust, 0, 200);
+  if (currentState != AT_INTERSECTION && currentState != STOPPED_MANUAL)
+    moveForward(leftMotorSpeed, rightMotorSpeed);
+
+  delay(5);
+}
